@@ -15,7 +15,7 @@ class Public(object):
         self.se = threading.Semaphore(max_thread)
 
     def async_call(self):
-        """
+        """self
         生成 rsync 命令
         :return: yield rsync 命令
         """
