@@ -2,7 +2,6 @@
 import os
 import sys
 import time
-import signal
 import logging
 import eventlet
 from eventlet.green import subprocess
@@ -30,17 +29,13 @@ def get_logger(name):
 class SubProc:
     def __init__(self, port, timeout, lpath, ip, rpath, password_file, max_thread=5):
 
-        # 协程列表：
-        self.gt_list = list()
         # 进程信息：
-        self.ret_code = 0
-        self.ret_info = "Null"
-        # 日志模块：
-        self.LOG = get_logger(__name__)
-
-        # 进程控制：
+        self.gt_list = list()
         self.proc_list = list()
         self.GREEN_POOL = eventlet.GreenPool(max_thread)
+
+        # 日志模块：
+        self.LOG = get_logger(__name__)
 
         # 构建同步命令:
         self.port = port  # 远程端口
@@ -83,32 +78,43 @@ class SubProc:
         :param task_cmd: rsync 命令
         :return:
         """
+        ret_code, ret_info = -1, ""
+        proc = subprocess.Popen(task_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        pid = proc.pid
+        self.proc_list.append(proc)
+        self.LOG.debug("RsyncStart: "
+                       "pid：{pid} "
+                       "task_cmd: {task_cmd}".format(pid=pid, task_cmd=task_cmd))
         try:
-            proc = subprocess.Popen(task_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            self.proc_list.append(proc)
-            self.LOG.debug("task_cmd: {task_cmd}".format(task_cmd=task_cmd))
-            self.ret_code = proc.wait(100)
-            self.ret_info = proc.stdout.read()
-            self.LOG.debug("ret_info：{ret_info}ret_code：{ret_code}\n"
-                           .format(ret_info=self.ret_info, ret_code=self.ret_code))
-        except BaseException as error:
-            self.LOG.debug("error: {error}\nret_info：{ret_info}ret_code：{ret_code} \ntask_cmd: {task_cmd}\n"
-                           .format(error=error, ret_info=self.ret_info, ret_code=self.ret_code, task_cmd=task_cmd))
+            ret_code = proc.wait(1500)
+            ret_info = proc.stdout.read()
+        except subprocess.TimeoutExpired as error:
+            self.LOG.debug("TimeoutExpired: "
+                           "pid：{pid} "
+                           "ret_code：{ret_code} "
+                           "ret_info：{ret_info}\n".format(pid=pid, ret_code=ret_code, ret_info=ret_info))
+            proc.kill()
+            proc.wait()
+
+        except Exception as error:
+            self.LOG.exception(error)
+            proc.kill()
+            proc.wait()
 
     def kill(self):
         """
-        调用此方法会将所有同步中的进程杀死， 配合抢占模式
+        杀死所有进程，包括协程。
         :return:
         """
-        for gt in self.gt_list:
-            """kill 掉所有的协程！"""
-            gt.kill()
+        for i in self.proc_list:
+            try:
+                i.kill()
+            except OSError:
+                pass
+        del self.proc_list
 
-        for proc in self.proc_list:
-            """kill 掉所有的同步进程！"""
-            os.killpg(proc.pid, signal.SIGUSR1)
-
-        exit(0)
+        for i in self.gt_list:
+            eventlet.kill(i)
 
     def main(self):
         """
@@ -123,5 +129,10 @@ if __name__ == '__main__':
     subproc = SubProc(port=873, timeout=60, lpath="/mount_path", ip="192.168.3.251",
                       rpath="mount_path", password_file="/etc/rsyncd.passwd", max_thread=5)
     subproc.main()
+
+    time.sleep(5)
+
+    subproc.kill()
+
     subproc.GREEN_POOL.waitall()
 
